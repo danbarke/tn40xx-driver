@@ -650,12 +650,12 @@ bdx_fifo_init(struct bdx_priv *priv, struct fifo *f, int fsz_type,
 {
 	u16 memsz = FIFO_SIZE * (1 << fsz_type);
 	memset(f, 0, sizeof(struct fifo));
-	/* pci_alloc_consistent gives us 4k-aligned memory */
+	/* dma_alloc_coherent gives us 4k-aligned memory */
 	if (f->va == NULL) {
-		f->va = pci_alloc_consistent(priv->pdev,
-					     memsz + FIFO_EXTRA_SPACE, &f->da);
+		f->va = dma_alloc_coherent(&priv->pdev->dev,
+					     memsz + FIFO_EXTRA_SPACE, &f->da, GFP_ATOMIC);
 		if (!f->va) {
-			pr_err("pci_alloc_consistent failed\n");
+			pr_err("dma_alloc_coherent failed\n");
 			return -ENOMEM;
 		}
 	}
@@ -681,8 +681,8 @@ static void bdx_fifo_free(struct bdx_priv *priv, struct fifo *f)
 {
 
 	if (f->va) {
-		pci_free_consistent(priv->pdev,
-				    f->memsz + FIFO_EXTRA_SPACE, f->va, f->da);
+		dma_free_coherent(&priv->pdev->dev,
+				    f->memsz + FIFO_EXTRA_SPACE, f->va, (enum dma_data_direction)f->da);
 		f->va = NULL;
 	}
 
@@ -1583,7 +1583,11 @@ static int bdx_set_mac(struct net_device *ndev, void *p)
 	struct bdx_priv *priv = netdev_priv(ndev);
 	struct sockaddr *addr = p;
 
-	memcpy(ndev->dev_addr, addr->sa_data, ndev->addr_len);
+	/*
+	   if (netif_running(dev))
+	   return -EBUSY
+	 */
+	eth_hw_addr_set(ndev, addr->sa_data);
 	bdx_restore_mac(ndev, priv);
 	return 0;
 }
@@ -1591,6 +1595,7 @@ static int bdx_set_mac(struct net_device *ndev, void *p)
 static int bdx_read_mac(struct bdx_priv *priv)
 {
 	u16 macAddress[3], i;
+	u8 addr[ETH_ALEN];
 
 	macAddress[2] = READ_REG(priv, regUNC_MAC0_A);
 	macAddress[2] = READ_REG(priv, regUNC_MAC0_A);
@@ -1599,9 +1604,10 @@ static int bdx_read_mac(struct bdx_priv *priv)
 	macAddress[0] = READ_REG(priv, regUNC_MAC2_A);
 	macAddress[0] = READ_REG(priv, regUNC_MAC2_A);
 	for (i = 0; i < 3; i++) {
-		priv->ndev->dev_addr[i * 2 + 1] = macAddress[i];
-		priv->ndev->dev_addr[i * 2] = macAddress[i] >> 8;
+		addr[i * 2 + 1] = macAddress[i];
+		addr[i * 2] = macAddress[i] >> 8;
 	}
+	eth_hw_addr_set(priv->ndev, addr);
 	return 0;
 }
 
@@ -1839,10 +1845,10 @@ static int bdx_rx_alloc_page(struct bdx_priv *priv, struct bdx_page *bdx_page)
 		get_page(bdx_page->page);
 		bdx_page->ref_count = 1;
 		bdx_page->dma =
-		    pci_map_page(priv->pdev, bdx_page->page, 0L,
+		    dma_map_page(&priv->pdev->dev, bdx_page->page, 0L,
 				 priv->rx_page_table.page_size,
-				 PCI_DMA_FROMDEVICE);
-		if (!pci_dma_mapping_error(priv->pdev, bdx_page->dma)) {
+				 DMA_FROM_DEVICE);
+		if (!dma_mapping_error(&priv->pdev->dev, bdx_page->dma)) {
 			rVal = 0;
 		} else {
 			__free_pages(bdx_page->page,
@@ -1922,8 +1928,8 @@ static void bdx_rx_free_bdx_page(struct bdx_priv *priv,
 				 struct bdx_page *bdx_page)
 {
 
-	pci_unmap_page(priv->pdev, bdx_page->dma, priv->rx_page_table.page_size,
-		       PCI_DMA_FROMDEVICE);
+	dma_unmap_page(&priv->pdev->dev, bdx_page->dma, priv->rx_page_table.page_size,
+		       DMA_FROM_DEVICE);
 	put_page(bdx_page->page);
 
 }
@@ -2102,9 +2108,9 @@ static void bdx_rx_free_buffers(struct bdx_priv *priv, struct rxdb *db,
 		dm = bdx_rxdb_addr_elem(db, i);
 		if (dm->dma) {
 			if (dm->skb) {
-				pci_unmap_single(priv->pdev, dm->dma,
+				dma_unmap_single(&priv->pdev->dev, dm->dma,
 						 f->m.pktsz,
-						 PCI_DMA_FROMDEVICE);
+						 DMA_FROM_DEVICE);
 				dev_kfree_skb(dm->skb);
 			} else {
 				struct bdx_page *bdx_page = bdx_rx_page(dm);
@@ -2751,8 +2757,8 @@ static inline int bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 		/* initial skb */
 		len = skb->len - skb->data_len;
 		dmaAddr =
-		    pci_map_single(priv->pdev, skb->data, len,
-				   PCI_DMA_TODEVICE);
+		    dma_map_single(&priv->pdev->dev, skb->data, len,
+				   DMA_TO_DEVICE);
 		bdx_setTxdb(db, dmaAddr, len);
 		bdx_setPbl(pbl++, db->wptr->addr.dma, db->wptr->len);
 		*pkt_len = db->wptr->len;
@@ -2764,7 +2770,7 @@ static inline int bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 			size = skb_frag_size(frag);
 			dmaAddr =
 			    skb_frag_dma_map(&priv->pdev->dev, frag, 0,
-					     size, PCI_DMA_TODEVICE);
+					     size, DMA_TO_DEVICE);
 			bdx_tx_db_inc_wptr(db);
 			bdx_setTxdb(db, dmaAddr, size);
 			bdx_setPbl(pbl++, db->wptr->addr.dma, db->wptr->len);
@@ -2834,7 +2840,7 @@ static int bdx_tx_init(struct bdx_priv *priv)
 	/* SHORT_PKT_FIX */
 	priv->b0_len = 64;
 	priv->b0_va =
-	    pci_alloc_consistent(priv->pdev, priv->b0_len, &priv->b0_dma);
+	    dma_alloc_coherent(&priv->pdev->dev, priv->b0_len, &priv->b0_dma, GFP_ATOMIC);
 	memset(priv->b0_va, 0, priv->b0_len);
 	/* SHORT_PKT_FIX end */
 
@@ -3035,10 +3041,10 @@ static void bdx_tx_cleanup(struct bdx_priv *priv)
 		BDX_ASSERT(db->rptr->len == 0);
 		do {
 			BDX_ASSERT(db->rptr->addr.dma == 0);
-			pr_debug("pci_unmap_page 0x%llx len %d\n",
+			pr_debug("dma_unmap_page 0x%llx len %d\n",
 				 db->rptr->addr.dma, db->rptr->len);
-			pci_unmap_page(priv->pdev, db->rptr->addr.dma,
-				       db->rptr->len, PCI_DMA_TODEVICE);
+			dma_unmap_page(&priv->pdev->dev, db->rptr->addr.dma,
+				       db->rptr->len, DMA_TO_DEVICE);
 			bdx_tx_db_inc_rptr(db);
 		} while (db->rptr->len > 0);
 		tx_level -= db->rptr->len;	/* '-' Because the len is negative */
@@ -3086,8 +3092,8 @@ static void bdx_tx_free_skbs(struct bdx_priv *priv)
 
 	while (db->rptr != db->wptr) {
 		if (likely(db->rptr->len))
-			pci_unmap_page(priv->pdev, db->rptr->addr.dma,
-				       db->rptr->len, PCI_DMA_TODEVICE);
+			dma_unmap_page(&priv->pdev->dev, db->rptr->addr.dma,
+				       db->rptr->len, DMA_TO_DEVICE);
 		else
 			dev_kfree_skb(db->rptr->addr.skb);
 		bdx_tx_db_inc_rptr(db);
@@ -3106,8 +3112,8 @@ static void bdx_tx_free(struct bdx_priv *priv)
 	bdx_tx_db_close(&priv->txdb);
 	/* SHORT_PKT_FIX */
 	if (priv->b0_len) {
-		pci_free_consistent(priv->pdev, priv->b0_len, priv->b0_va,
-				    priv->b0_dma);
+		dma_free_coherent(&priv->pdev->dev, priv->b0_len, priv->b0_va,
+				    (enum dma_data_direction)priv->b0_dma);
 		priv->b0_len = 0;
 	}
 	/* SHORT_PKT_FIX end */
@@ -3455,12 +3461,12 @@ static int __init bdx_probe(struct pci_dev *pdev,
 						   why. */
 		goto err_pci;	/* it's not a problem though */
 
-	if (!(err = pci_set_dma_mask(pdev, LUXOR__DMA_64BIT_MASK)) &&
-	    !(err = pci_set_consistent_dma_mask(pdev, LUXOR__DMA_64BIT_MASK))) {
+	if (!(err = dma_set_mask(&pdev->dev, LUXOR__DMA_64BIT_MASK)) &&
+	    !(err = dma_set_coherent_mask(&pdev->dev, LUXOR__DMA_64BIT_MASK))) {
 		pci_using_dac = 1;
 	} else {
-		if ((err = pci_set_dma_mask(pdev, LUXOR__DMA_32BIT_MASK)) ||
-		    (err = pci_set_consistent_dma_mask(pdev,
+		if ((err = dma_set_mask(&pdev->dev, LUXOR__DMA_32BIT_MASK)) ||
+		    (err = dma_set_coherent_mask(&pdev->dev,
 						       LUXOR__DMA_32BIT_MASK)))
 		{
 			pr_err("No usable DMA configuration - aborting\n");
@@ -3771,7 +3777,7 @@ bdx_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
  * @ecoal
  */
 static int
-bdx_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecoal)
+bdx_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecoal, struct kernel_ethtool_coalesce *kernel_coal, struct netlink_ext_ack *extack)
 {
 	u32 rdintcm;
 	u32 tdintcm;
@@ -3803,7 +3809,7 @@ bdx_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecoal)
  * @ecoal
  */
 static int
-bdx_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecoal)
+bdx_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecoal, struct kernel_ethtool_coalesce *kernel_coal, struct netlink_ext_ack *extack)
 {
 	u32 rdintcm;
 	u32 tdintcm;
@@ -3862,9 +3868,14 @@ static inline int bdx_tx_fifo_size_to_packets(int tx_size)
  *
  * @netdev
  * @ring
+ * @kernel_ering
+ * @extack
  */
 static void
-bdx_get_ringparam(struct net_device *netdev, struct ethtool_ringparam *ring)
+bdx_get_ringparam(struct net_device *netdev,
+		 struct ethtool_ringparam *ring,
+		 struct kernel_ethtool_ringparam *kernel_ering,
+		 struct netlink_ext_ack *extack)
 {
 	struct bdx_priv *priv = netdev_priv(netdev);
 
@@ -3882,7 +3893,10 @@ bdx_get_ringparam(struct net_device *netdev, struct ethtool_ringparam *ring)
  * @ring
  */
 static int
-bdx_set_ringparam(struct net_device *netdev, struct ethtool_ringparam *ring)
+bdx_set_ringparam(struct net_device *netdev,
+		 struct ethtool_ringparam *ring,
+		 struct kernel_ethtool_ringparam *kernel_ering,
+		 struct netlink_ext_ack *extack)
 {
 	struct bdx_priv *priv = netdev_priv(netdev);
 	int rx_size = 0;
