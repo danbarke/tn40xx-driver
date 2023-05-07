@@ -2757,8 +2757,8 @@ static inline int bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 		/* initial skb */
 		len = skb->len - skb->data_len;
 		dmaAddr =
-                   pci_map_single(priv->pdev, skb->data, len,
-                                  PCI_DMA_TODEVICE);
+                   dma_map_single(&priv->pdev->dev, skb->data, len,
+                                  DMA_TO_DEVICE);
 		bdx_setTxdb(db, dmaAddr, len);
 		bdx_setPbl(pbl++, db->wptr->addr.dma, db->wptr->len);
 		*pkt_len = db->wptr->len;
@@ -2770,7 +2770,7 @@ static inline int bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 			size = skb_frag_size(frag);
 			dmaAddr =
                            skb_frag_dma_map(&priv->pdev->dev, frag, 0,
-                                            frag->bv_len, PCI_DMA_TODEVICE);
+                                            frag->bv_len, DMA_TO_DEVICE);
 			bdx_tx_db_inc_wptr(db);
                         bdx_setTxdb(db, dmaAddr, frag->bv_len);
 			bdx_setPbl(pbl++, db->wptr->addr.dma, db->wptr->len);
