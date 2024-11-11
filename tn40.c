@@ -2770,9 +2770,9 @@ static inline int bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 			size = skb_frag_size(frag);
 			dmaAddr =
                            skb_frag_dma_map(&priv->pdev->dev, frag, 0,
-                                            frag->bv_len, DMA_TO_DEVICE);
+                                            size, DMA_TO_DEVICE);
 			bdx_tx_db_inc_wptr(db);
-                        bdx_setTxdb(db, dmaAddr, frag->bv_len);
+                        bdx_setTxdb(db, dmaAddr, size);
 			bdx_setPbl(pbl++, db->wptr->addr.dma, db->wptr->len);
 			*pkt_len += db->wptr->len;
 		}
@@ -3757,11 +3757,14 @@ bdx_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
 {
 	struct bdx_priv *priv = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver, BDX_DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, BDX_DRV_VERSION, sizeof(drvinfo->version));
-	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
-	strlcpy(drvinfo->bus_info, pci_name(priv->pdev),
-		sizeof(drvinfo->bus_info));
+	strncpy(drvinfo->driver, BDX_DRV_NAME, sizeof(drvinfo->driver));
+	drvinfo->driver[sizeof(drvinfo->driver) - 1] = '\0';
+	strncpy(drvinfo->version, BDX_DRV_VERSION, sizeof(drvinfo->version));
+	drvinfo->version[sizeof(drvinfo->version) - 1] = '\0';
+	strncpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
+	drvinfo->fw_version[sizeof(drvinfo->fw_version) - 1] = '\0';
+	strncpy(drvinfo->bus_info, pci_name(priv->pdev), sizeof(drvinfo->bus_info));
+	drvinfo->bus_info[sizeof(drvinfo->bus_info) - 1] = '\0';
 
 	drvinfo->n_stats =
 	    ((priv->stats_flag) ? ARRAY_SIZE(bdx_stat_names) : 0);
